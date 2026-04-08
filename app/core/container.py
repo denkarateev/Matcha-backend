@@ -35,6 +35,14 @@ from app.modules.profile.domain.models import Profile
 from app.modules.profile.repository import InMemoryProfileRepository
 from app.modules.profile.service import ProfileService
 
+# DB-backed sync repositories (loaded lazily when USE_DB_REPOS=true)
+from app.modules.auth.db_repository import SyncDBAuthRepository
+from app.modules.profile.db_repository import SyncDBProfileRepository
+from app.modules.matches.db_repository import SyncDBMatchRepository
+from app.modules.offers.db_repository import SyncDBOfferRepository
+from app.modules.chats.db_repository import SyncDBChatRepository
+from app.modules.deals.db_repository import SyncDBDealRepository
+
 
 @dataclass
 class InMemoryStore:
@@ -1011,25 +1019,48 @@ def build_container(settings: Settings) -> AppContainer:
     import logging
     _log = logging.getLogger(__name__)
 
-    # Try loading persisted store first (preserves user data across restarts)
-    store = InMemoryStore.load_from_disk()
-    if store is not None:
-        _log.info("Loaded persisted store from %s (users=%d, deals=%d, swipes=%d)",
-                  STORE_PERSIST_PATH, len(store.users), len(store.deals), len(store.swipes))
+    if settings.use_db_repos:
+        # -----------------------------------------------------------------
+        # PostgreSQL-backed repositories (sync, psycopg2 driver)
+        # -----------------------------------------------------------------
+        from app.database.session import get_sync_session_factory
+
+        sf = get_sync_session_factory()
+        _log.info("Building container with PostgreSQL DB repositories (sync)")
+
+        auth_repo = SyncDBAuthRepository(sf)
+        profile_repo = SyncDBProfileRepository(sf)
+        match_repo = SyncDBMatchRepository(sf)
+        offer_repo = SyncDBOfferRepository(sf)
+        chat_repo = SyncDBChatRepository(sf)
+        deal_repo = SyncDBDealRepository(sf)
+
     else:
-        # No persisted store — create fresh with seed data
-        store = InMemoryStore()
-        _seed_store(store)
-        store.persist()
-        _log.info("Seeded fresh store and persisted to %s", STORE_PERSIST_PATH)
+        # -----------------------------------------------------------------
+        # InMemory repositories (default, backward-compatible)
+        # -----------------------------------------------------------------
+        # Try loading persisted store first (preserves user data across restarts)
+        store = InMemoryStore.load_from_disk()
+        if store is not None:
+            _log.info("Loaded persisted store from %s (users=%d, deals=%d, swipes=%d)",
+                      STORE_PERSIST_PATH, len(store.users), len(store.deals), len(store.swipes))
+        else:
+            # No persisted store — create fresh with seed data
+            store = InMemoryStore()
+            _seed_store(store)
+            store.persist()
+            _log.info("Seeded fresh store and persisted to %s", STORE_PERSIST_PATH)
 
-    auth_repo = InMemoryAuthRepository(store)
-    profile_repo = InMemoryProfileRepository(store)
-    match_repo = InMemoryMatchRepository(store)
-    offer_repo = InMemoryOfferRepository(store)
-    chat_repo = InMemoryChatRepository(store)
-    deal_repo = InMemoryDealRepository(store)
+        auth_repo = InMemoryAuthRepository(store)
+        profile_repo = InMemoryProfileRepository(store)
+        match_repo = InMemoryMatchRepository(store)
+        offer_repo = InMemoryOfferRepository(store)
+        chat_repo = InMemoryChatRepository(store)
+        deal_repo = InMemoryDealRepository(store)
 
+    # -----------------------------------------------------------------
+    # Services (same wiring regardless of repository backend)
+    # -----------------------------------------------------------------
     auth_service = AuthService(auth_repo=auth_repo, profile_repo=profile_repo)
     profile_service = ProfileService(profile_repo=profile_repo, auth_repo=auth_repo)
     chat_service = ChatService(
